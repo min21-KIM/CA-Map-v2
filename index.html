@@ -21,17 +21,51 @@
       <div class="bg-white rounded-2xl shadow p-4">
         <h2 class="font-semibold mb-3">① 데이터 업로드</h2>
         <input id="fileInput" type="file" accept=".xlsx,.xls" class="w-full text-sm" />
-        <div class="mt-3 text-xs text-gray-600">* 헤더는 1행이어야 합니다. 보조인지와 이미지 문항만 남긴 Raw Data 파일을 업로드하세요.</div>
+        <div class="mt-3 text-xs text-gray-600">* 헤더는 1행이어야 합니다.</div>
         <div id="fileMeta" class="mt-3 text-xs text-gray-700"></div>
       </div>
 
       <div class="bg-white rounded-2xl shadow p-4">
         <h2 class="font-semibold mb-3">② 문항 선택</h2>
-        <label class="block text-sm mb-1">인지도(Base) 문항(Q 번호)</label>
-        <select id="awarenessQ" class="w-full border rounded-lg px-2 py-1 text-sm"></select>
+        
+        <!-- 인지도 형태 자동 감지 표시 -->
+        <div id="awarenessTypeInfo" class="mb-3 p-2 bg-blue-50 rounded text-xs hidden">
+          <span class="font-semibold">감지된 인지도 형태:</span> <span id="awarenessTypeText"></span>
+        </div>
+
+        <!-- 중복응답 형태일 때 -->
+        <div id="multiResponseSection" class="hidden">
+          <label class="block text-sm mb-1">인지도(Base) 문항(Q 번호)</label>
+          <select id="awarenessQ" class="w-full border rounded-lg px-2 py-1 text-sm"></select>
+        </div>
+
+        <!-- 단일응답 형태일 때 -->
+        <div id="singleResponseSection" class="hidden">
+          <label class="block text-sm mb-1">인지도(Base) 문항(Q 번호) - 복수선택</label>
+          <div id="awarenessQChecklist" class="border rounded-lg p-2 max-h-40 overflow-auto space-y-1"></div>
+          <div class="flex gap-2 mt-2 text-xs">
+            <button id="selectAllQ" class="px-2 py-1 bg-slate-100 rounded">전체 선택</button>
+            <button id="deselectAllQ" class="px-2 py-1 bg-slate-100 rounded">전체 해제</button>
+          </div>
+
+          <label class="block text-sm mt-3 mb-1">인지자로 간주할 보기 선택</label>
+          <div id="awarenessOptionsDiv" class="border rounded-lg p-2 space-y-1 text-sm"></div>
+        </div>
+
         <div class="mt-3 flex items-center gap-2">
           <input id="useAwarenessBase" type="checkbox" class="h-4 w-4" checked />
           <label for="useAwarenessBase" class="text-sm">브랜드별 <b>인지자(Base)</b>로 이미지 집계</label>
+        </div>
+        
+        <!-- 이상적 브랜드 Base 설정 -->
+        <div id="idealBrandBaseSection" class="mt-3 p-3 bg-gray-50 rounded-lg hidden">
+          <div class="text-sm font-semibold mb-2">이상적 브랜드 Base 설정</div>
+          <div class="text-xs text-gray-600 mb-2">스크린아웃 된 응답자가 있는 경우, 이상적 브랜드의 모수를 직접 지정하세요.</div>
+          <div class="flex items-center gap-2">
+            <label class="text-xs">Base N =</label>
+            <input id="idealBrandBase" type="number" min="1" placeholder="전체" class="border rounded px-2 py-1 text-sm w-24" />
+            <span class="text-xs text-gray-500">(미지정시 전체 응답자 기준으로 계산됨)</span>
+          </div>
         </div>
       </div>
     </section>
@@ -81,6 +115,9 @@
             <option value="weighted">3순위(순위별 가중치 부여)</option>
             <option value="top1">1순위</option>
           </select>
+          <div id="rankModeWarning" class="hidden mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+            ℹ️ 중복응답 데이터가 감지되었습니다. 순위 옵션은 적용되지 않습니다.
+          </div>
           <label class="block text-sm mt-3 mb-1">CA 맵핑 옵션</label>
           <select id="caMode" class="w-full border rounded-lg px-2 py-1 text-sm">
             <option value="proportion" selected>A. 인지 대비 응답 비율로 맵핑</option>
@@ -120,6 +157,7 @@
     function extractQnum(col){ const m = /^\s*(Q\d+)/.exec(col); return m ? m[1] : null; }
     function splitAtFirstUnderscore(col){ const idx = col.indexOf("_"); if (idx<0) return [col,""]; return [col.slice(0,idx), col.slice(idx+1)]; }
     function parseBrandAndAttr(rest){ const parts = rest.split("_"); const brand = parts[0]||""; const attr = parts.slice(1).join("_")||""; return {brand, attr}; }
+    function hasExcludeKeyword(col){ return col.includes('비보조'); }
     const uniq = arr => [...new Set(arr)];
 
     // rank handling
@@ -127,25 +165,25 @@
       if (v===null || v===undefined || v==="") return 0;
       const num = Number(v);
       if (Number.isNaN(num)) return 0;
-
-      // ✅ 항상 1~3위만 유효 (옵션 제거)
-      if (num > 3) return 0;
-
-      // 1순위만 분석
+      
+      const isRank = window.imageDataIsRank !== false;
+      
+      if (!isRank) {
+        // 중복응답 데이터: 값이 있으면 1점 (보기번호 무관)
+        return (num > 0) ? 1 : 0;
+      }
+      
+      // 순위 데이터 처리
       if (mode === "top1") return (num === 1) ? 1 : 0;
-
-      // 바이너리: 1/2/3위는 1
-      if (mode === "binary") return 1;
-
-      // 가중치: 1=3, 2=2, 3=1
+      if (mode === "binary") return (num > 0 && num <= 3) ? 1 : 0;
+      // weighted mode
       if (num === 1) return 3;
       if (num === 2) return 2;
       if (num === 3) return 1;
-
       return 0;
     }
 
-    // CA (행<열 시 전치-SVD)
+    // CA
     function correspondenceAnalysis(X){
       const rows=X.length, cols=X[0].length;
       let total=0; for(let i=0;i<rows;i++) for(let j=0;j<cols;j++) total+=X[i][j];
@@ -164,11 +202,20 @@
       return {eigs,F,G,rowMass:r,colMass:c};
     }
 
-    // 입력 데이터 요약(모드별 표) 렌더링
     function renderDataSummary(div, caMode, brands, attrs, baseN, counts) {
       if (!div) return;
-
-      // 1) 브랜드별 인지자 수(빈도)
+      
+      // ✅ 디버그: 첫 번째 속성의 계산 정보 출력
+      console.log('=== renderDataSummary 디버그 ===');
+      console.log('caMode:', caMode);
+      console.log('첫 번째 속성:', attrs[0]);
+      brands.forEach((b, i) => {
+        const count = counts[i]?.[0] ?? 0;
+        const base = baseN[i];
+        const pct = (count / base) * 100;
+        console.log(`  ${b}: count=${count}, base=${base}, 비율=${pct.toFixed(1)}%`);
+      });
+      
       const baseRows = brands.map((b, i) => 
         `<tr><td class="px-2 py-1 border">${b}</td><td class="px-2 py-1 border text-right">${baseN[i] ?? 0}</td></tr>`
       ).join("");
@@ -179,12 +226,9 @@
           <tbody>${baseRows}</tbody>
         </table>
       `;
-
-      // 2) 속성 × 브랜드 표
       const header = `<tr><th class="px-2 py-1 border text-left">속성</th>${
         brands.map(b=>`<th class="px-2 py-1 border text-right">${b}</th>`).join("")
       }</tr>`;
-
       const body = attrs.map((a, aj) => {
         const cells = brands.map((b, bi) => {
           const v = counts[bi]?.[aj] ?? 0;
@@ -198,11 +242,9 @@
         }).join("");
         return `<tr><td class="px-2 py-1 border">${a}</td>${cells}</tr>`;
       }).join("");
-
       const caption = (caMode === 'proportion')
         ? `<div class="mb-1 text-gray-600">표준화 기준: 비율(각 브랜드 인지자 base 대비 %)</div>`
         : `<div class="mb-1 text-gray-600">표준화 기준: 빈도(선택 카운트)</div>`;
-
       const table = `
         <div class="mb-2 font-semibold">속성 × 브랜드 ${caMode==='proportion'?'응답 비율(%)':'응답 빈도'}</div>
         ${caption}
@@ -213,7 +255,6 @@
           </table>
         </div>
       `;
-
       div.innerHTML = baseTable + table;
     }
 
@@ -221,18 +262,25 @@
     let rawDF=null, columns=[];
     let awarenessQnums=[], imageQnums=[];
     let brandImageCols={}, brandAwarenessCols={};
+    let allBrandAwarenessColsByQ={}; 
     let imageBrands=[], awarenessBrands=[], attrs=[];
-
-    // selections & mapping
-    let brandNameMap = {}; // 이미지→인지도 매핑
-    let baseAllBrands = new Set(); // 파일 로드 후 isIdealBrandName로 채움
+    let brandNameMap = {}; 
+    let baseAllBrands = new Set(); 
     let lastChecklistKey = "";
+
+    // ✅ 새로운 변수: 인지도 형태 및 단일응답 관련
+    let awarenessType = 'multi'; // 'multi' or 'single'
+    let singleResponseAwarenessCols = {}; // {Q번호: {brand: column}}
+    let awarenessOptions = []; // 인지도 보기 선택지 (단일응답용)
+    let selectedAwarenessOptions = new Set(); // 선택된 보기
 
     // UI refs
     const fileInput=document.getElementById('fileInput');
     const fileMeta=document.getElementById('fileMeta');
     const awarenessQ=document.getElementById('awarenessQ');
     const useAwarenessBase=document.getElementById('useAwarenessBase');
+    const idealBrandBaseSection=document.getElementById('idealBrandBaseSection');
+    const idealBrandBaseInput=document.getElementById('idealBrandBase');
     const rankModeSel=document.getElementById('rankMode');
     const caModeSel=document.getElementById('caMode');
     const runBtn=document.getElementById('runBtn');
@@ -254,23 +302,141 @@
     const coordsDiv=document.getElementById('coords');
     const dataSummaryDiv = document.getElementById('dataSummary');
 
-    // ✅ 선택/전체 카운트 DOM
     const brandCountSelSpan = document.getElementById('brandCountSel');
     const brandCountAllSpan = document.getElementById('brandCountAll');
     const attrCountSelSpan  = document.getElementById('attrCountSel');
     const attrCountAllSpan  = document.getElementById('attrCountAll');
 
-    // ✅ 타이틀 (선택/전체) 카운트 갱신
+    // ✅ 단일응답 UI refs
+    const awarenessTypeInfo = document.getElementById('awarenessTypeInfo');
+    const awarenessTypeText = document.getElementById('awarenessTypeText');
+    const multiResponseSection = document.getElementById('multiResponseSection');
+    const singleResponseSection = document.getElementById('singleResponseSection');
+    const awarenessQChecklist = document.getElementById('awarenessQChecklist');
+    const selectAllQBtn = document.getElementById('selectAllQ');
+    const deselectAllQBtn = document.getElementById('deselectAllQ');
+    const awarenessOptionsDiv = document.getElementById('awarenessOptionsDiv');
+
     function updateTitleCounts(allBrandsArr, allAttrsArr){
       const allB = allBrandsArr?.length || 0;
       const allA = allAttrsArr?.length || 0;
       const selB = Array.from(document.querySelectorAll('.brandTick')).filter(ch=>ch.checked).length;
       const selA = Array.from(document.querySelectorAll('.attrTick')).filter(ch=>ch.checked).length;
-
       if (brandCountAllSpan) brandCountAllSpan.textContent = allB;
       if (brandCountSelSpan) brandCountSelSpan.textContent = selB;
       if (attrCountAllSpan)  attrCountAllSpan.textContent  = allA;
       if (attrCountSelSpan)  attrCountSelSpan.textContent  = selA;
+    }
+
+    function getAvailableBrands(selectedQ) {
+      if (awarenessType === 'single') {
+        // 단일응답: 선택된 Q들의 브랜드만
+        const selectedQs = Array.from(document.querySelectorAll('.awarenessQTick:checked')).map(ch => ch.value);
+        const availableBrandSet = new Set();
+        selectedQs.forEach(q => {
+          if (singleResponseAwarenessCols[q]) {
+            Object.keys(singleResponseAwarenessCols[q]).forEach(b => availableBrandSet.add(b));
+          }
+        });
+        
+        // ✅ 이미지 브랜드 필터링 (매핑 고려)
+        return imageBrands.filter(imgBrand => {
+          // 이상적 브랜드는 항상 포함
+          if (isIdealBrandName(imgBrand)) return true;
+          // 전수 집계 브랜드
+          if (baseAllBrands.has(imgBrand)) return true;
+          // 매핑된 브랜드
+          const mappedBrand = brandNameMap[imgBrand] || imgBrand;
+          return availableBrandSet.has(mappedBrand);
+        });
+      } else {
+        // 중복응답
+        if (!selectedQ || !allBrandAwarenessColsByQ[selectedQ]) {
+          return imageBrands;
+        }
+        const qAwarenessBrands = Object.keys(allBrandAwarenessColsByQ[selectedQ]);
+        return imageBrands.filter(imgBrand => {
+          if (isIdealBrandName(imgBrand)) return true;
+          if (baseAllBrands.has(imgBrand)) return true;
+          const mappedBrand = brandNameMap[imgBrand] || imgBrand;
+          return qAwarenessBrands.includes(mappedBrand);
+        });
+      }
+    }
+
+    function updateUIForSelectedQ() {
+      if (awarenessType === 'single') {
+        // 단일응답: 체크된 Q들 기준으로 업데이트
+        const availableBrands = getAvailableBrands(null);
+        renderChecklists(availableBrands, attrs);
+        
+        // 브랜드 매핑 업데이트
+        const selectedQs = Array.from(document.querySelectorAll('.awarenessQTick:checked')).map(ch => ch.value);
+        const allAwarenessBrandsSet = new Set();
+        selectedQs.forEach(q => {
+          if (singleResponseAwarenessCols[q]) {
+            Object.keys(singleResponseAwarenessCols[q]).forEach(b => allAwarenessBrandsSet.add(b));
+          }
+        });
+        awarenessBrands = Array.from(allAwarenessBrandsSet);
+        renderBrandMapping();
+
+        if (notesDiv) {
+          if (selectedQs.length === 0) {
+            notesDiv.innerHTML = `<div class="text-red-600">⚠️ 인지도 Q를 1개 이상 선택하세요.</div>`;
+          } else if (availableBrands.length < imageBrands.length) {
+            notesDiv.innerHTML = `<div class="text-amber-600">⚠️ 선택된 ${selectedQs.join(', ')}에서 매칭 가능한 브랜드는 ${availableBrands.length}개입니다. (전체: ${imageBrands.length}개)</div>`;
+          } else {
+            notesDiv.innerHTML = "";
+          }
+        }
+      } else {
+        // 중복응답
+        const selectedQ = awarenessQ.value;
+        if (!selectedQ) return;
+        brandAwarenessCols = allBrandAwarenessColsByQ[selectedQ] || {};
+        awarenessBrands = Object.keys(brandAwarenessCols);
+        renderBrandMapping();
+        const availableBrands = getAvailableBrands(selectedQ);
+        renderChecklists(availableBrands, attrs);
+        if (availableBrands.length < imageBrands.length) {
+          if (notesDiv) {
+            notesDiv.innerHTML = `<div class="text-amber-600">⚠️ 선택된 ${selectedQ}에서 매칭 가능한 브랜드는 ${availableBrands.length}개입니다. (전체: ${imageBrands.length}개)</div>`;
+          }
+        } else {
+          if (notesDiv) notesDiv.innerHTML = "";
+        }
+      }
+    }
+
+    // ✅ 단일응답: 보기 선택 렌더링
+    function renderAwarenessOptions() {
+      if (awarenessOptions.length === 0) {
+        awarenessOptionsDiv.innerHTML = '<div class="text-gray-500">보기를 감지할 수 없습니다.</div>';
+        return;
+      }
+      
+      const optionTexts = window.awarenessOptionTexts || {};
+      awarenessOptionsDiv.innerHTML = awarenessOptions.map(opt => {
+        const displayText = optionTexts[opt] || opt;  // TEXT가 있으면 표시, 없으면 코드
+        return `
+          <label class='flex items-center gap-2'>
+            <input type='checkbox' class='awarenessOptionCheck' value='${opt}' ${selectedAwarenessOptions.has(opt) ? 'checked' : ''} />
+            <span>${displayText}</span>
+          </label>
+        `;
+      }).join('');
+      
+      // 체크박스 변경 이벤트
+      document.querySelectorAll('.awarenessOptionCheck').forEach(ch => {
+        ch.addEventListener('change', () => {
+          if (ch.checked) {
+            selectedAwarenessOptions.add(ch.value);
+          } else {
+            selectedAwarenessOptions.delete(ch.value);
+          }
+        });
+      });
     }
 
     // file handler
@@ -287,27 +453,204 @@
       const meta=columns.map(col=>({
         col,
         q: extractQnum(col),
-        isAwareness: col.includes(KOREAN_AWARENESS_KEY),
+        isAwareness: col.includes(KOREAN_AWARENESS_KEY) && !col.includes(KOREAN_IMAGE_KEY) && !hasExcludeKeyword(col),
         isImage: col.includes(KOREAN_IMAGE_KEY),
         isText: isTextAux(col)
       }));
 
       awarenessQnums = uniq(meta.filter(m=>m.isAwareness && !m.isText).map(m=>m.q)).filter(Boolean);
       imageQnums = uniq(meta.filter(m=>m.isImage && !m.isText).map(m=>m.q)).filter(Boolean);
-      // 이미지 문항 선택 UI 제거: 전 Q 사용
 
-      if (awarenessQ) {
+      // ✅ 인지도 형태 자동 감지
+      const awarenessColsAll = meta.filter(m=>m.isAwareness && !m.isText);
+      
+      // 중복응답 판단: Q당 여러 브랜드가 있는지 확인
+      const qBrandCount = {};
+      awarenessColsAll.forEach(({col, q}) => {
+        if (!q) return;
+        if (!qBrandCount[q]) qBrandCount[q] = 0;
+        qBrandCount[q]++;
+      });
+      
+      const isMultiResponse = Object.values(qBrandCount).some(count => count > 1);
+      
+      if (isMultiResponse) {
+        awarenessType = 'multi';
+        awarenessTypeText.textContent = '중복응답 (하나의 Q에 여러 브랜드)';
+        multiResponseSection.classList.remove('hidden');
+        singleResponseSection.classList.add('hidden');
+        
+        // 기존 로직
         awarenessQ.innerHTML = awarenessQnums.map(q=>`<option value="${q}">${q}</option>`).join('')
           || `<option value="">(없음)</option>`;
         if (awarenessQnums.length) awarenessQ.value = awarenessQnums[0];
-      }   
 
-      // build dictionaries
+        allBrandAwarenessColsByQ = {};
+        awarenessColsAll.forEach(({col, q})=>{
+          if (!q) return;
+          if (!allBrandAwarenessColsByQ[q]) allBrandAwarenessColsByQ[q] = {};
+          const [,rest]=splitAtFirstUnderscore(col);
+          const brand=rest; 
+          if(brand) allBrandAwarenessColsByQ[q][brand]=col;
+        });
+        
+        const firstQ = awarenessQnums[0];
+        brandAwarenessCols = allBrandAwarenessColsByQ[firstQ] || {};
+        awarenessBrands=Object.keys(brandAwarenessCols);
+
+      } else {
+        // ✅ 단일응답
+        awarenessType = 'single';
+        awarenessTypeText.textContent = '단일응답 (각 브랜드마다 별도 Q)';
+        multiResponseSection.classList.add('hidden');
+        singleResponseSection.classList.remove('hidden');
+
+        // Q별 브랜드 매핑 구축
+        singleResponseAwarenessCols = {};
+        awarenessColsAll.forEach(({col, q}) => {
+          if (!q) return;
+          if (!singleResponseAwarenessCols[q]) singleResponseAwarenessCols[q] = {};
+          
+          // 브랜드명 추출: "Q2. 벤츠 브랜드 인지도" → "벤츠"
+          const parts = col.split(/\s+/);
+          let brandName = '';
+          for (let i = 1; i < parts.length; i++) {
+            if (parts[i].includes('브랜드') || parts[i].includes('인지도')) break;
+            brandName += (brandName ? ' ' : '') + parts[i];
+          }
+          if (brandName) {
+            singleResponseAwarenessCols[q][brandName] = col;
+          }
+        });
+
+        // Q 체크리스트 렌더링
+        awarenessQChecklist.innerHTML = awarenessQnums.map(q => `
+          <label class='flex items-center gap-2'>
+            <input type='checkbox' class='awarenessQTick' value='${q}' checked />
+            <span>${q}</span>
+          </label>
+        `).join('');
+
+        // Q 체크박스 변경 이벤트
+        document.querySelectorAll('.awarenessQTick').forEach(ch => {
+          ch.addEventListener('change', updateUIForSelectedQ);
+        });
+
+        // 전체/해제 버튼
+        selectAllQBtn.addEventListener('click', () => {
+          document.querySelectorAll('.awarenessQTick').forEach(ch => ch.checked = true);
+          updateUIForSelectedQ();
+        });
+        deselectAllQBtn.addEventListener('click', () => {
+          document.querySelectorAll('.awarenessQTick').forEach(ch => ch.checked = false);
+          updateUIForSelectedQ();
+        });
+
+        // ✅ 보기 선택지 수집 (첫 번째 인지도 문항에서)
+        if (awarenessColsAll.length > 0) {
+          const firstCol = awarenessColsAll[0].col;
+          const textCol = firstCol + '(TEXT)';  // TEXT 컬럼명
+          
+          const optionMapping = {};  // code -> text 매핑
+          rawDF.forEach(row => {
+            const code = row[firstCol];
+            const text = columns.includes(textCol) ? row[textCol] : null;
+            if (code !== null && code !== undefined && code !== '') {
+              const codeStr = String(code);
+              if (!optionMapping[codeStr] && text) {
+                optionMapping[codeStr] = String(text);
+              } else if (!optionMapping[codeStr]) {
+                optionMapping[codeStr] = codeStr;  // TEXT 없으면 코드 그대로
+              }
+            }
+          });
+          
+          awarenessOptions = Object.keys(optionMapping).sort((a, b) => {
+            const numA = Number(a), numB = Number(b);
+            return !isNaN(numA) && !isNaN(numB) ? numA - numB : a.localeCompare(b);
+          });
+          
+          // 보기 텍스트 저장
+          window.awarenessOptionTexts = optionMapping;
+          
+          // ✅ 기본값: 모두 해제
+          selectedAwarenessOptions = new Set();
+          
+          renderAwarenessOptions();
+        }
+
+        // 모든 브랜드 수집
+        const allAwarenessBrandsSet = new Set();
+        Object.values(singleResponseAwarenessCols).forEach(brandMap => {
+          Object.keys(brandMap).forEach(b => allAwarenessBrandsSet.add(b));
+        });
+        awarenessBrands = Array.from(allAwarenessBrandsSet);
+      }
+
+      awarenessTypeInfo.classList.remove('hidden');
+
+      // 이미지 문항 파싱
       brandImageCols={};
       imageBrands=[]; attrs=[];
       const imageCols=meta.filter(m=>m.isImage && !m.isText);
+      
+      // ✅ 데이터 형식 자동 감지
+      let isRankData = true;  // 기본값: 순위 데이터
+      if (imageCols.length > 0) {
+        // 여러 컬럼 샘플링해서 판단
+        const sampleSize = Math.min(5, imageCols.length);
+        const uniqueValsCounts = [];
+        
+        for (let i = 0; i < sampleSize; i++) {
+          const sampleCol = imageCols[i].col;
+          const uniqueVals = new Set();
+          rawDF.forEach(row => {
+            const v = row[sampleCol];
+            if (v !== null && v !== undefined && v !== '') uniqueVals.add(Number(v));
+          });
+          uniqueValsCounts.push(uniqueVals.size);
+        }
+        
+        // 모든 샘플 컬럼이 단일 값만 가지면 중복응답
+        isRankData = uniqueValsCounts.some(count => count > 1);
+      }
+      window.imageDataIsRank = isRankData;
+      
       imageCols.forEach(({col})=>{
-        const [,rest]=splitAtFirstUnderscore(col);
+        const [prefix,rest]=splitAtFirstUnderscore(col);
+        
+        // 특수 케이스: rest에 '_'가 없으면 (예: 기업 데이터)
+        if (!rest.includes('_')) {
+          if (prefix.includes(KOREAN_IMAGE_KEY)) {
+            const imageIdx = prefix.indexOf(KOREAN_IMAGE_KEY);
+            let beforeImage = prefix.substring(0, imageIdx).trim();
+            
+            // ✅ Q번호 완전 제거 (Q + 숫자 + . + 공백)
+            beforeImage = beforeImage.replace(/^Q\d+\.\s*/g, '').trim();
+            
+            // ✅ 수식어 제거 (정확한 단어 매칭)
+            const modifiers = ['기능', '감성', '기능적', '감성적', '이미지'];
+            const brandParts = beforeImage.split(/\s+/);
+            if (brandParts.length > 1) {
+              const lastWord = brandParts[brandParts.length - 1];
+              if (modifiers.includes(lastWord)) {
+                beforeImage = brandParts.slice(0, -1).join(' ');
+              }
+            }
+            
+            const brand = beforeImage;
+            const attr = rest;
+            
+            if (brand && attr) {
+              if(!brandImageCols[brand]) brandImageCols[brand]={};
+              brandImageCols[brand][attr]=col;
+              imageBrands.push(brand); attrs.push(attr);
+            }
+          }
+          return;
+        }
+        
+        // 일반 케이스
         const {brand,attr}=parseBrandAndAttr(rest);
         if(!brand||!attr) return;
         if(!brandImageCols[brand]) brandImageCols[brand]={};
@@ -316,49 +659,53 @@
       });
       imageBrands=uniq(imageBrands); attrs=uniq(attrs);
 
-      brandAwarenessCols={};
-      const awareCols=meta.filter(m=>m.isAwareness && !m.isText);
-      awareCols.forEach(({col})=>{
-        const [,rest]=splitAtFirstUnderscore(col);
-        const brand=rest; if(brand) brandAwarenessCols[brand]=col;
-      });
-      awarenessBrands=Object.keys(brandAwarenessCols);
-
-      // brand matching UI
+      // 브랜드 매핑
       brandNameMap={};
       baseAllBrands = new Set(imageBrands.filter(b=>isIdealBrandName(b)));
+      
+      // ✅ 이상적 브랜드가 있으면 Base 설정 UI 표시
+      if (baseAllBrands.size > 0) {
+        idealBrandBaseSection.classList.remove('hidden');
+      } else {
+        idealBrandBaseSection.classList.add('hidden');
+      }
+      
       renderBrandMapping();
-      renderChecklists(imageBrands, attrs);
+      const initialAvailableBrands = getAvailableBrands(awarenessType === 'multi' ? awarenessQnums[0] : null);
+      renderChecklists(initialAvailableBrands, attrs);
 
       if (notesDiv) { notesDiv.innerHTML = ""; }
     });
 
+    // ✅ 중복응답일 때만 change 이벤트
+    awarenessQ.addEventListener('change', () => {
+      if (awarenessType === 'multi') {
+        updateUIForSelectedQ();
+      }
+    });
+
     function renderBrandMapping(){
       const unmatchedImg = imageBrands.filter(b=>!awarenessBrands.includes(b) && !isIdealBrandName(b));
-
       const applyBtn = document.getElementById('applyMapping');
       const resetBtn = document.getElementById('resetMapping');
-
       brandMappingDiv.innerHTML = '';
 
       if (unmatchedImg.length === 0) {
-        // ✅ 모두 매칭됨
+        // ✅ 완전 매칭 시 성공 메시지
         brandMatchWarn.classList.remove('hidden');
         brandMatchWarn.classList.remove('text-amber-700');
         brandMatchWarn.classList.add('text-green-700');
-        brandMatchWarn.innerHTML = '모든 브랜드가 정확히 매칭되었습니다.';
-
+        brandMatchWarn.innerHTML = '✅ 모든 브랜드가 정확히 매칭되었습니다.';
         if (applyBtn) { applyBtn.disabled = true; applyBtn.classList.add('opacity-50','cursor-not-allowed'); }
         if (resetBtn) { resetBtn.disabled = true; resetBtn.classList.add('opacity-50','cursor-not-allowed'); }
         return;
       }
 
-      // ⚠️ 미매칭 있음
+      // ✅ 미매칭 브랜드가 있을 때만 경고 표시
       brandMatchWarn.classList.remove('hidden');
       brandMatchWarn.classList.remove('text-green-700');
       brandMatchWarn.classList.add('text-amber-700');
-      brandMatchWarn.innerHTML = `이미지 문항의 브랜드 중 인지도에서 <b>미매칭</b>: ${unmatchedImg.join(', ')} · 기본 동작: 제외 (원하면 매핑 지정)`;
-
+      brandMatchWarn.innerHTML = `⚠️ 이미지 문항의 브랜드 중 인지도 문항에서 <b>매칭되지 않은 브랜드</b>: ${unmatchedImg.join(', ')} · (분석을 원하시는 경우 직접 매칭해주세요.)`;
       if (applyBtn) { applyBtn.disabled = false; applyBtn.classList.remove('opacity-50','cursor-not-allowed'); }
       if (resetBtn) { resetBtn.disabled = false; resetBtn.classList.remove('opacity-50','cursor-not-allowed'); }
 
@@ -377,24 +724,23 @@
     }
 
     applyMappingBtn.addEventListener('click',()=>{
-    brandNameMap={};
-    // 이상적 브랜드는 '이상적' 키워드 포함 기준으로 다시 설정
-    baseAllBrands = new Set(imageBrands.filter(b=>isIdealBrandName(b)));
-    brandMappingDiv.querySelectorAll('select[data-imgbrand]').forEach(sel=>{
+      brandNameMap={};
+      baseAllBrands = new Set(imageBrands.filter(b=>isIdealBrandName(b)));
+      brandMappingDiv.querySelectorAll('select[data-imgbrand]').forEach(sel=>{
         const imgBrand=sel.getAttribute('data-imgbrand');
         const v=sel.value;
-        if(!v) return; // 제외
+        if(!v) return;
         if(v==='__ALL__') { baseAllBrands.add(imgBrand); return; }
         brandNameMap[imgBrand]=v;
-    });
-    alert('브랜드 매핑이 적용되었습니다.');
-    renderBrandMapping();
+      });
+      alert('브랜드 매핑이 적용되었습니다.');
+      updateUIForSelectedQ();
     });
 
     resetMappingBtn.addEventListener('click',()=>{
-    brandNameMap={};
-    baseAllBrands = new Set(imageBrands.filter(b=>isIdealBrandName(b)));
-    renderBrandMapping();
+      brandNameMap={};
+      baseAllBrands = new Set(imageBrands.filter(b=>isIdealBrandName(b)));
+      updateUIForSelectedQ();
     });
 
     function renderChecklists(brands, attrs){
@@ -404,8 +750,6 @@
       attrChecklist.innerHTML = attrs.map(a=>`
         <label class='flex items-center gap-2'><input type='checkbox' class='attrTick' value='${a}' checked /> <span class='truncate' title='${a}'>${a}</span></label>
       `).join('');
-
-      // ✅ 타이틀 카운트 초기화 & 변경 감지
       updateTitleCounts(brands, attrs);
       document.querySelectorAll('.brandTick').forEach(ch=>{
         ch.addEventListener('change', ()=>updateTitleCounts(brands, attrs));
@@ -415,19 +759,61 @@
       });
     }
 
-    brandsAllOn.addEventListener('click',()=>{ document.querySelectorAll('.brandTick').forEach(ch=>ch.checked=true); updateTitleCounts(imageBrands, attrs); });
-    brandsAllOff.addEventListener('click',()=>{ document.querySelectorAll('.brandTick').forEach(ch=>ch.checked=false); updateTitleCounts(imageBrands, attrs); });
-    attrsAllOn.addEventListener('click',()=>{ document.querySelectorAll('.attrTick').forEach(ch=>ch.checked=true); updateTitleCounts(imageBrands, attrs); });
-    attrsAllOff.addEventListener('click',()=>{ document.querySelectorAll('.attrTick').forEach(ch=>ch.checked=false); updateTitleCounts(imageBrands, attrs); });
+    brandsAllOn.addEventListener('click',()=>{ 
+      document.querySelectorAll('.brandTick').forEach(ch=>ch.checked=true); 
+      const selectedQ = awarenessType === 'multi' ? awarenessQ.value : null;
+      const availableBrands = getAvailableBrands(selectedQ);
+      updateTitleCounts(availableBrands, attrs); 
+    });
+    brandsAllOff.addEventListener('click',()=>{ 
+      document.querySelectorAll('.brandTick').forEach(ch=>ch.checked=false); 
+      const selectedQ = awarenessType === 'multi' ? awarenessQ.value : null;
+      const availableBrands = getAvailableBrands(selectedQ);
+      updateTitleCounts(availableBrands, attrs); 
+    });
+    attrsAllOn.addEventListener('click',()=>{ 
+      document.querySelectorAll('.attrTick').forEach(ch=>ch.checked=true); 
+      const selectedQ = awarenessType === 'multi' ? awarenessQ.value : null;
+      const availableBrands = getAvailableBrands(selectedQ);
+      updateTitleCounts(availableBrands, attrs); 
+    });
+    attrsAllOff.addEventListener('click',()=>{ 
+      document.querySelectorAll('.attrTick').forEach(ch=>ch.checked=false); 
+      const selectedQ = awarenessType === 'multi' ? awarenessQ.value : null;
+      const availableBrands = getAvailableBrands(selectedQ);
+      updateTitleCounts(availableBrands, attrs); 
+    });
 
     runBtn.addEventListener('click',()=>{
       try{
         if(!rawDF||!rawDF.length) throw new Error('먼저 엑셀 파일을 업로드하세요.');
-        const chosenAwQ=awarenessQ.value||null;
-        // 이미지 문항 선택 UI 제거
-        if(!chosenAwQ) throw new Error('인지도 Q 번호를 선택하세요.');
+        
+        // ✅ 인지도 형태별 처리
+        let finalBrandAwarenessCols = {};
+        
+        if (awarenessType === 'multi') {
+          const chosenAwQ=awarenessQ.value||null;
+          if(!chosenAwQ) throw new Error('인지도 Q 번호를 선택하세요.');
+          if(!allBrandAwarenessColsByQ[chosenAwQ] || Object.keys(allBrandAwarenessColsByQ[chosenAwQ]).length === 0) {
+            throw new Error(`${chosenAwQ}에 유효한 인지도 문항이 없습니다. 다른 Q를 선택하세요.`);
+          }
+          finalBrandAwarenessCols = allBrandAwarenessColsByQ[chosenAwQ];
+        } else {
+          // 단일응답
+          const selectedQs = Array.from(document.querySelectorAll('.awarenessQTick:checked')).map(ch => ch.value);
+          if (selectedQs.length === 0) throw new Error('인지도 Q를 1개 이상 선택하세요.');
+          if (selectedAwarenessOptions.size === 0) throw new Error('인지자로 간주할 보기를 1개 이상 선택하세요.');
+          
+          // 선택된 Q들의 브랜드 컬럼 병합
+          selectedQs.forEach(q => {
+            if (singleResponseAwarenessCols[q]) {
+              Object.entries(singleResponseAwarenessCols[q]).forEach(([brand, col]) => {
+                finalBrandAwarenessCols[brand] = col;
+              });
+            }
+          });
+        }
 
-        // ✅ 사용자가 체크한 브랜드/속성 및 옵션으로 바로 분석 실행
         const selectedBrands = Array.from(document.querySelectorAll('.brandTick'))
           .filter(ch => ch.checked)
           .map(ch => ch.value);
@@ -442,7 +828,6 @@
         const rMode = rankModeSel.value;
         const caMode = caModeSel.value;
 
-        // Build image col map limited by selections & chosen Qs
         const imgColsNeeded={};
         const finalBrands=[]; const finalAttrs=[];
         Object.entries(brandImageCols).forEach(([brand, amap])=>{
@@ -456,18 +841,28 @@
         const Ubrands=uniq(finalBrands), Uattrs=uniq(finalAttrs);
         if(Ubrands.length===0||Uattrs.length===0) throw new Error('선택된 조건에서 브랜드/속성이 없습니다.');
 
-        // Awareness flags per respondent (with mapping + baseAll)
+        // ✅ Awareness flags (단일응답 고려)
         const awarenessFlags = rawDF.map(row=>{
           const flagByBrand={};
           Ubrands.forEach(b=>{
-            // 매핑: 이미지 브랜드명 → 인지도 브랜드명
             const awareKey = brandNameMap[b] || b;
             let aware=true;
             if(useBase){
               if(baseAllBrands.has(b)) { aware=true; }
               else {
-                const col=brandAwarenessCols[awareKey];
-                if(!col) aware=false; else { const v=row[col]; aware = !(v===null||v===undefined||v===''); }
+                const col=finalBrandAwarenessCols[awareKey];
+                if(!col) {
+                  aware=false;
+                } else {
+                  const v=row[col];
+                  if (awarenessType === 'single') {
+                    // 단일응답: 선택된 보기에 해당하면 인지자
+                    aware = selectedAwarenessOptions.has(String(v));
+                  } else {
+                    // 중복응답: 값이 있으면 인지자
+                    aware = !(v===null||v===undefined||v==='');
+                  }
+                }
               }
             }
             flagByBrand[b]=aware;
@@ -475,7 +870,6 @@
           return flagByBrand;
         });
 
-        // counts & baseN
         const counts=Array.from({length:Ubrands.length},()=>Array(Uattrs.length).fill(0));
         const baseN=Array.from({length:Ubrands.length},()=>0);
 
@@ -490,21 +884,31 @@
             });
           });
         });
+        
+        // ✅ 이상적 브랜드의 Base 수동 설정 적용
+        const idealBase = idealBrandBaseInput.value ? parseInt(idealBrandBaseInput.value) : null;
+        if (idealBase && idealBase > 0) {
+          Ubrands.forEach((b, bi) => {
+            if (isIdealBrandName(b)) {
+              baseN[bi] = idealBase;
+            }
+          });
+        }
 
-        // build CA input
         let X;
         if(caMode==='proportion'){
-          X = counts.map((row,i)=>{ const d=Math.max(1,baseN[i]); return row.map(v=>v/d); });
-          const totalSum = X.flat().reduce((a,b)=>a+b,0);
-          if (totalSum > 0) {
-            X = X.map(row => row.map(v => v / totalSum));
-          }          
-        } else { X = counts.map(r=>r.slice()); }
+          // Base 대비 비율로 변환 (CA 입력용)
+          X = counts.map((row,i)=>{ 
+            const d=Math.max(1,baseN[i]); 
+            return row.map(v=>v/d); 
+          });
+        } else { 
+          // 원본 빈도
+          X = counts.map(r=>r.slice()); 
+        }
 
-        // 입력 데이터 요약표 렌더
         renderDataSummary(dataSummaryDiv, caMode, Ubrands, Uattrs, baseN, counts);
 
-        // CA
         const sumAll=X.flat().reduce((a,b)=>a+b,0); if(sumAll<=0) throw new Error('모든 값이 0입니다.');
         const ca=correspondenceAnalysis(X);
         const eigs=ca.eigs, F=ca.F, G=ca.G;
@@ -517,11 +921,10 @@
 
         eigsDiv.innerHTML = `<div>고유값(상위 5): ${eigs.slice(0,5).map(e=>e.toFixed(4)).join(', ')}</div>
           <div>설명력: Dim1 ${var1.toFixed(1)}%, Dim2 ${var2.toFixed(1)}%</div>
-          <div class='mt-2 text-gray-600 text-xs'>입력: ${caMode==='proportion'?'비율':'원본'} · 순위처리: ${
-            rMode==='binary'?'바이너리':(rMode==='weighted'?'가중치':'Top-1')
+          <div class='mt-2 text-gray-600 text-xs'>입력: ${caMode==='proportion'?'비율':'원본(빈도)'} · 순위처리: ${
+            rMode==='binary'?'3순위(가중치X)':(rMode==='weighted'?'3순위(가중치O)':'1순위')
           } · Base: ${useBase?'인지자만':'전체'}</div>`;
 
-        // 좌표 전체 나열
         const brandRows = Ubrands.map((lab,i)=>`<div class="flex justify-between"><span>${lab}</span><span>[${(F[i][0]||0).toFixed(3)}, ${(F[i][1]||0).toFixed(3)}]</span></div>`).join("");
         const attrRows = Uattrs.map((lab,j)=>`<div class="flex justify-between"><span>${lab}</span><span>[${(G[j][0]||0).toFixed(3)}, ${(G[j][1]||0).toFixed(3)}]</span></div>`).join("");
         coordsDiv.innerHTML = `<div class="font-semibold mb-1">브랜드 (${Ubrands.length})</div>${brandRows}<div class="font-semibold mt-3 mb-1">속성 (${Uattrs.length})</div>${attrRows}`;
